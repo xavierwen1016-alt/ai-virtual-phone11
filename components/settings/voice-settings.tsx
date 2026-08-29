@@ -240,7 +240,7 @@ export function VoiceSettings() {
     const [manualModelIds, setManualModelIds] = useState<Record<string, boolean>>({});
     const [manualVoiceIds, setManualVoiceIds] = useState<Record<string, boolean>>({});
     const [isLoaded, setIsLoaded] = useState(false);
-    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null); const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
     // Fetching states for Voices
     const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
@@ -511,53 +511,82 @@ export function VoiceSettings() {
         }
     };
 
-    const togglePreview = async (config: VoiceApiConfig) => {
-        if (playingVoiceId === config.id) {
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current = null;
+const togglePreview = async (config: VoiceApiConfig) => {
+    if (playingVoiceId === config.id) {
+        if (audioSourceRef.current) {
+            try {
+                audioSourceRef.current.stop();
+            } catch {
+                // 音频已经结束时可能会抛错，忽略即可
             }
-            setPlayingVoiceId(null);
-            return;
+            audioSourceRef.current = null;
+        }
+        setPlayingVoiceId(null);
+        return;
+    }
+
+    if (audioSourceRef.current) {
+        try {
+            audioSourceRef.current.stop();
+        } catch {
+            // 忽略已经结束的音频
+        }
+        audioSourceRef.current = null;
+    }
+
+    try {
+        if (typeof window === "undefined" || !window.AudioContext) {
+            throw new Error("当前浏览器不支持音频播放");
         }
 
-        if (audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current = null;
-        }
+        const audioContext =
+            audioContextRef.current || new window.AudioContext();
+
+        audioContextRef.current = audioContext;
+
+        // 必须在用户点击后、请求 TTS 前解锁音频
+        await audioContext.resume();
 
         setPlayingVoiceId(config.id);
 
-        try {
-            const previewText = config.provider === "Minimax" && config.languageBoost
-                ? MINIMAX_PREVIEW_TEXT[config.languageBoost] || "你好，很高兴认识你。这是一段语音试听。"
-                : "你好，我现在是" + (config.defaultVoice || "默认") + "音色。很高兴认识你。";
-            const blob = await synthesizeSpeech(
-                previewText,
-                config,
-            );
-            if (!blob) throw new Error("当前语音配置未返回真实音频");
-            const url = URL.createObjectURL(blob);
+        const previewText =
+            config.provider === "Minimax" && config.languageBoost
+                ? MINIMAX_PREVIEW_TEXT[config.languageBoost] ||
+                  "你好，很高兴认识你。这是一段语音试听。"
+                : "你好，我现在是" +
+                  (config.defaultVoice || "默认") +
+                  "音色。很高兴认识你。";
 
-            const audio = new Audio(url);
-            audioRef.current = audio;
-            audio.onended = () => {
-                setPlayingVoiceId(null);
-                audioRef.current = null;
-                URL.revokeObjectURL(url);
-            };
-            audio.onerror = () => {
-                setPlayingVoiceId(null);
-                audioRef.current = null;
-                URL.revokeObjectURL(url);
-            };
-            await audio.play();
-        } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
-            alert(`语音测试失败: ${msg}`);
-            setPlayingVoiceId(null);
+        const blob = await synthesizeSpeech(previewText, config);
+
+        if (!blob) {
+            throw new Error("当前语音配置未返回真实音频");
         }
-    };
+
+        const audioBuffer = await audioContext.decodeAudioData(
+            await blob.arrayBuffer()
+        );
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+
+        audioSourceRef.current = source;
+
+        source.onended = () => {
+            if (audioSourceRef.current === source) {
+                audioSourceRef.current = null;
+                setPlayingVoiceId(null);
+            }
+        };
+
+        source.start(0);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        alert(`语音测试失败: ${msg}`);
+        setPlayingVoiceId(null);
+    }
+};
 
     if (!isLoaded) return null;
 
