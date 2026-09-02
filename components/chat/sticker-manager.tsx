@@ -37,7 +37,40 @@ export function StickerManager({ onBack }: { onBack: () => void }) {
     const [editingPack, setEditingPack] = useState<StickerPack | null>(null);
     const [showCreateDialog, setShowCreateDialog] = useState(false);
     const [deletingPackId, setDeletingPackId] = useState<string | null>(null);
+const [scanning, setScanning] = useState(false);
+const [scanResult, setScanResult] = useState<null | { removedStickers: any[]; removedPacks: any[] }>(null);
+const [showCleanConfirm, setShowCleanConfirm] = useState(false);
 
+const handleOneClickClean = async () => {
+    setScanning(true);
+    try {
+        const res = await cleanInvalidStickerPacks({ dryRun: true, checkExternal: true, timeoutMs: 6000 });
+        if ((res.removedStickers?.length ?? 0) === 0 && (res.removedPacks?.length ?? 0) === 0) {
+            window.alert("未检测到失效表情包。");
+            return;
+        }
+        setScanResult(res);
+        setShowCleanConfirm(true);
+    } catch (e) {
+        window.alert("检测失败：" + String(e));
+    } finally {
+        setScanning(false);
+    }
+};
+
+const performClean = async () => {
+    setShowCleanConfirm(false);
+    setScanning(true);
+    try {
+        const res = await cleanInvalidStickerPacks({ dryRun: false, checkExternal: true, timeoutMs: 6000 });
+        window.alert(`已删除 ${res.removedStickers.length} 个失效表情，${res.removedPacks.length} 个表情包已被删除。`);
+        refresh();
+    } catch (e) {
+        window.alert("清理失败：" + String(e));
+    } finally {
+        setScanning(false);
+    }
+};
     const refresh = () => setPacks(loadStickerPacks());
     useEffect(() => { refresh(); }, []);
 
@@ -61,6 +94,13 @@ export function StickerManager({ onBack }: { onBack: () => void }) {
         <PageShell title="表情包管理" onBack={onBack} className="absolute inset-0 z-[100]">
             <div className="px-5 pt-4 pb-8 h-full overflow-y-auto">
                 <div className="grid grid-cols-2 gap-4">
+                    <div className="mb-4 flex items-center justify-between col-span-2">
+    <div className="ts-12">管理表情包</div>
+    <div className="flex gap-2">
+        <button className="ui-btn ui-btn-ghost" onClick={handleOneClickClean} disabled={scanning}>{scanning ? '检测中...' : '扫描失效'}</button>
+        <button className="ui-btn ui-btn-danger" onClick={handleOneClickClean} disabled={scanning}>{scanning ? '检测中...' : '一键清理失效表情包'}</button>
+    </div>
+</div>
                     {packs.map((pack, i) => {
                         const assignedIds = getPackAssignments(pack.id);
                         const assignedNames = characters.filter(c => assignedIds.includes(c.id)).map(c => c.name);
@@ -613,7 +653,18 @@ function PackEditor({ pack, onBack }: { pack: StickerPack; onBack: () => void })
                 />,
                 document.querySelector(".phone-shell") ?? document.body
             )}
-
+{showCleanConfirm && createPortal(
+    <ConfirmDialog
+        title="确认清理失效表情包"
+        message={`检测到 ${scanResult?.removedStickers.length ?? 0} 个失效表情，${scanResult?.removedPacks.length ?? 0} 个表情包将被删除。是否继续？`}
+        variant="danger"
+        icon={Trash2}
+        confirmLabel="确认清理"
+        onConfirm={performClean}
+        onCancel={() => setShowCleanConfirm(false)}
+    />,
+    document.querySelector(".phone-shell") ?? document.body
+)}
         </PageShell>
     );
 }
