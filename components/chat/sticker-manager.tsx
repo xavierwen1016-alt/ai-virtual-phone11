@@ -39,7 +39,7 @@ export function StickerManager({ onBack }: { onBack: () => void }) {
     const [deletingPackId, setDeletingPackId] = useState<string | null>(null);
 const [scanning, setScanning] = useState(false);
 const [scanResult, setScanResult] = useState<null | { removedStickers: any[]; removedPacks: any[] }>(null);
-const [showCleanConfirm, setShowCleanConfirm] = useState(false);
+
 
 const handleOneClickClean = async () => {
     setScanning(true);
@@ -50,7 +50,8 @@ const handleOneClickClean = async () => {
             return;
         }
         setScanResult(res);
-        setShowCleanConfirm(true);
+const ok = window.confirm('检测到 ' + res.removedStickers.length + ' 个失效表情，' + res.removedPacks.length + ' 个表情包将被删除。是否继续？');
+if (ok) { await performClean(); }
     } catch (e) {
         window.alert("检测失败：" + String(e));
     } finally {
@@ -59,7 +60,6 @@ const handleOneClickClean = async () => {
 };
 
 const performClean = async () => {
-    setShowCleanConfirm(false);
     setScanning(true);
     try {
         const res = await cleanInvalidStickerPacks({ dryRun: false, checkExternal: true, timeoutMs: 6000 });
@@ -653,18 +653,6 @@ function PackEditor({ pack, onBack }: { pack: StickerPack; onBack: () => void })
                 />,
                 document.querySelector(".phone-shell") ?? document.body
             )}
-{showCleanConfirm && createPortal(
-    <ConfirmDialog
-        title="确认清理失效表情包"
-        message={`检测到 ${scanResult?.removedStickers.length ?? 0} 个失效表情，${scanResult?.removedPacks.length ?? 0} 个表情包将被删除。是否继续？`}
-        variant="danger"
-        icon={Trash2}
-        confirmLabel="确认清理"
-        onConfirm={performClean}
-        onCancel={() => setShowCleanConfirm(false)}
-    />,
-    document.querySelector(".phone-shell") ?? document.body
-)}
         </PageShell>
     );
 }
