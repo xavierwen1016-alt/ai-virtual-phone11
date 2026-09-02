@@ -370,3 +370,124 @@ async function compressStickerImage(blob: Blob): Promise<Blob> {
         return blob;
     }
 }
+// ── 清理失效表情包（会检测 IndexedDB 里的本地资产及外链图片是否可用） ──
+export type CleanInvalidResult = {
+    removedStickers: Array<{ packId: string; packName: string; stickerId: string; stickerName: string; assetId?: string; externalUrl?: string; reason: string }>;
+    removedPacks: Array<{ packId: string; packName: string }>;
+};
+
+/**
+ * 扫描并（可选地）清理失效的表情包条目。
+ * - dryRun=true 时只返回将被删除的条目，不做实际删除。
+ * - checkExternal 表示是否对外链图片进行可用性检测（默认 true）。
+ * - timeoutMs 为外链图片检测的超时时间（毫秒）。
+ */
+export async function cleanInvalidStickerPacks(options?: { dryRun?: boolean; checkExternal?: boolean; timeoutMs?: number }): Promise<CleanInvalidResult> {
+    const { dryRun = true, checkExternal = true, timeoutMs = 6000 } = options || {};
+    if (typeof window === "undefined") {
+        throw new Error("cleanInvalidStickerPacks must be called in a browser environment");
+    }
+
+    const packs = readPacks();
+    if (!packs || packs.length === 0) return { removedStickers: [], removedPacks: [] };
+
+    // Gather all asset IDs and reference counts
+    const allAssetIds: string[] = [];
+    const assetRefCount: Record<string, number> = {};
+    for (const p of packs) {
+        for (const s of p.stickers) {
+            if (s.assetId) {
+                allAssetIds.push(s.assetId);
+                assetRefCount[s.assetId] = (assetRefCount[s.assetId] || 0) + 1;
+            }
+        }
+    }
+
+    const existingAssets = allAssetIds.length > 0 ? await getThemeAssetMap(allAssetIds) : {};
+
+    // Helper: check external URL by loading it into an Image element (works around CORS for img loads)
+    const checkExternalUrl = (url: string): Promise<boolean> => {
+        return new Promise((resolve) => {
+            try {
+                const img = new Image();
+                let settled = false;
+                const timer = setTimeout(() => { if (!settled) { settled = true; resolve(false); img.src = ""; } }, timeoutMs);
+                img.onload = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(true); } };
+                img.onerror = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(false); } };
+                img.src = url;
+            } catch (e) {
+                resolve(false);
+            }
+        });
+    };
+
+    const removedStickers: CleanInvalidResult['removedStickers'] = [];
+    const removedPacks: CleanInvalidResult['removedPacks'] = [];
+    const newPacks: typeof packs = [];
+
+    for (const pack of packs) {
+        const kept: typeof pack.stickers = [];
+        for (const s of pack.stickers) {
+            // Case 1: local asset
+            if (s.assetId) {
+                if (!existingAssets[s.assetId]) {
+                    removedStickers.push({ packId: pack.id, packName: pack.name, stickerId: s.id, stickerName: s.name, assetId: s.assetId, reason: "missing_asset" });
+                    // decrement ref count (only relevant when actually deleting)
+                    if (!dryRun) {
+                        assetRefCount[s.assetId] = (assetRefCount[s.assetId] || 1) - 1;
+                    }
+                    continue; // drop this sticker
+                }
+                // asset exists → keep
+                kept.push(s);
+                continue;
+            }
+
+            // Case 2: external URL
+            if (s.externalUrl) {
+                if (checkExternal) {
+                    const ok = await checkExternalUrl(s.externalUrl);
+                    if (!ok) {
+                        removedStickers.push({ packId: pack.id, packName: pack.name, stickerId: s.id, stickerName: s.name, externalUrl: s.externalUrl, reason: "broken_external" });
+                        continue;
+                    }
+                }
+                // external is considered ok (or not checked)
+                kept.push(s);
+                continue;
+            }
+
+            // Case 3: neither assetId nor externalUrl → invalid
+            removedStickers.push({ packId: pack.id, packName: pack.name, stickerId: s.id, stickerName: s.name, reason: "invalid_entry" });
+        }
+
+        if (kept.length === 0) {
+            // whole pack becomes empty → remove the pack
+            removedPacks.push({ packId: pack.id, packName: pack.name });
+        } else {
+            // keep pack with filtered stickers
+            const copy = { ...pack, stickers: kept };
+            newPacks.push(copy);
+        }
+    }
+
+    if (!dryRun) {
+        // delete unreferenced local assets
+        const assetIdsToCheck = Object.keys(assetRefCount);
+        for (const aid of assetIdsToCheck) {
+            if ((assetRefCount[aid] || 0) <= 0) {
+                try { await deleteThemeAsset(aid); } catch { /* ignore */ }
+            }
+        }
+
+        // write new packs and clear assignments for removed packs
+        writePacks(newPacks);
+        if (removedPacks.length > 0) {
+            const assignments = readAssignments();
+            for (const rp of removedPacks) delete assignments[rp.packId];
+            writeAssignments(assignments);
+        }
+    }
+
+    return { removedStickers, removedPacks };
+}
