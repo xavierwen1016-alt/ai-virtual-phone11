@@ -21,6 +21,7 @@ import {
     getPackAssignments,
     togglePackAssignment,
     resolvePackStickerMap,
+    cleanInvalidStickerPacks,   // <-- 新增这行
     getCharacterPackIds,
     type StickerItem,
     type StickerPack,
